@@ -7,97 +7,139 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Helper to fetch HTML
+// List of Gogoanime mirrors (try multiple)
+const DOMAINS = [
+  'https://gogoanime3.co',
+  'https://gogoanime.gg',
+  'https://gogoanime.lu',
+  'https://gogoanime.pe'
+];
+
+let currentDomain = DOMAINS[0];
+
 async function fetchHTML(url) {
   const response = await axios.get(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     },
     timeout: 15000,
   });
   return response.data;
 }
 
-// Search
+// Search with fallback domains
 app.get('/search', async (req, res) => {
-  try {
-    const { q } = req.query;
-    if (!q) return res.status(400).json({ error: 'Missing q' });
-    const url = `https://gogoanime.gg/search.html?keyword=${encodeURIComponent(q)}`;
-    const html = await fetchHTML(url);
-    const $ = cheerio.load(html);
-    const results = [];
-    $('.last_episodes .items li').each((i, el) => {
-      const title = $(el).find('.name a').text().trim();
-      const href = $(el).find('.name a').attr('href');
-      const id = href ? href.replace('/category/', '') : '';
-      const image = $(el).find('img').attr('src');
-      if (title && id) results.push({ id, title, session: id, poster: image });
-    });
-    res.json(results.slice(0, 20));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const { q } = req.query;
+  if (!q) return res.status(400).json({ error: 'Missing q' });
 
-// Episodes
-app.get('/episodes', async (req, res) => {
-  try {
-    const { session } = req.query;
-    if (!session) return res.status(400).json({ error: 'Missing session' });
-    const url = `https://gogoanime.gg/category/${session}`;
-    const html = await fetchHTML(url);
-    const $ = cheerio.load(html);
-    const episodes = [];
-    $('#episode_page a').each((i, el) => {
-      const epNum = parseInt($(el).text().trim());
-      const epLink = $(el).attr('href');
-      const epId = epLink ? epLink.split('/').pop() : '';
-      if (epNum && epId) episodes.push({ number: epNum, title: `Episode ${epNum}`, session: epId });
-    });
-    episodes.reverse();
-    res.json({ episodes });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  for (const domain of DOMAINS) {
+    try {
+      const url = `${domain}/search.html?keyword=${encodeURIComponent(q)}`;
+      console.log(`Trying: ${url}`);
+      const html = await fetchHTML(url);
+      const $ = cheerio.load(html);
+      const results = [];
 
-// Sources
-app.get('/sources', async (req, res) => {
-  try {
-    const { ep_session } = req.query;
-    if (!ep_session) return res.status(400).json({ error: 'Missing ep_session' });
-    const episodeUrl = `https://gogoanime.gg/${ep_session}`;
-    const html = await fetchHTML(episodeUrl);
-    const $ = cheerio.load(html);
-    let streamUrl = '';
-    $('iframe').each((i, el) => {
-      const src = $(el).attr('src');
-      if (src && src.includes('streaming.php')) streamUrl = src;
-    });
-    if (!streamUrl) {
-      const fallback = $('.play-video iframe').attr('src');
-      if (fallback) streamUrl = fallback;
-    }
-    if (!streamUrl) return res.status(404).json({ error: 'No streaming iframe' });
-    const streamHtml = await fetchHTML(streamUrl);
-    const $stream = cheerio.load(streamHtml);
-    let m3u8 = '';
-    $stream('script').each((i, script) => {
-      const content = $(script).html();
-      if (content && content.includes('file:')) {
-        const match = content.match(/file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
-        if (match) m3u8 = match[1];
+      // Try different selectors
+      const items = $('.last_episodes .items li, .items li, ul.items li');
+      items.each((i, el) => {
+        const titleElem = $(el).find('.name a, a[href*="/category/"]');
+        let title = titleElem.text().trim();
+        let href = titleElem.attr('href');
+        if (!href) {
+          href = $(el).find('a').attr('href');
+          title = $(el).find('a').text().trim();
+        }
+        const id = href ? href.replace('/category/', '').replace('/', '') : '';
+        const image = $(el).find('img').attr('src');
+        if (title && id) {
+          results.push({ id, title, session: id, poster: image });
+        }
+      });
+
+      if (results.length > 0) {
+        currentDomain = domain;
+        return res.json(results.slice(0, 20));
       }
-    });
-    if (!m3u8) return res.status(404).json({ error: 'No m3u8 found' });
-    res.json([{ quality: 'auto', kwik_url: m3u8, audio: 'jpn' }]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    } catch (err) {
+      console.log(`Domain ${domain} failed:`, err.message);
+    }
   }
+  res.json([]);
 });
 
-// Proxy m3u8
+// Episodes (similar fallback)
+app.get('/episodes', async (req, res) => {
+  const { session } = req.query;
+  if (!session) return res.status(400).json({ error: 'Missing session' });
+
+  for (const domain of DOMAINS) {
+    try {
+      const url = `${domain}/category/${session}`;
+      const html = await fetchHTML(url);
+      const $ = cheerio.load(html);
+      const episodes = [];
+
+      $('#episode_page a, .episode-list a, .anime_video_body_episodes li a').each((i, el) => {
+        const epNum = parseInt($(el).text().trim());
+        const epLink = $(el).attr('href');
+        const epId = epLink ? epLink.split('/').pop() : '';
+        if (!isNaN(epNum) && epId) {
+          episodes.push({ number: epNum, title: `Episode ${epNum}`, session: epId });
+        }
+      });
+
+      if (episodes.length > 0) {
+        episodes.sort((a,b) => a.number - b.number);
+        return res.json({ episodes });
+      }
+    } catch (err) {}
+  }
+  res.json({ episodes: [] });
+});
+
+// Sources (use the working domain)
+app.get('/sources', async (req, res) => {
+  const { ep_session } = req.query;
+  if (!ep_session) return res.status(400).json({ error: 'Missing ep_session' });
+
+  for (const domain of DOMAINS) {
+    try {
+      const episodeUrl = `${domain}/${ep_session}`;
+      const html = await fetchHTML(episodeUrl);
+      const $ = cheerio.load(html);
+      let streamUrl = '';
+      $('iframe').each((i, el) => {
+        let src = $(el).attr('src');
+        if (src && (src.includes('streaming.php') || src.includes('embed'))) {
+          streamUrl = src;
+          return false;
+        }
+      });
+      if (!streamUrl) streamUrl = $('.play-video iframe').attr('src') || '';
+      if (!streamUrl) continue;
+
+      if (streamUrl.startsWith('//')) streamUrl = 'https:' + streamUrl;
+      const streamHtml = await fetchHTML(streamUrl);
+      const $stream = cheerio.load(streamHtml);
+      let m3u8 = '';
+      $stream('script').each((i, script) => {
+        const content = $(script).html();
+        if (content) {
+          const match = content.match(/file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
+          if (match) m3u8 = match[1];
+        }
+      });
+      if (m3u8) {
+        return res.json([{ quality: 'auto', kwik_url: m3u8, audio: 'jpn' }]);
+      }
+    } catch (err) {}
+  }
+  res.status(404).json({ error: 'No sources found' });
+});
+
+// Proxy endpoints (unchanged)
 app.get('/proxy/m3u8', async (req, res) => {
   try {
     const { url } = req.query;
@@ -116,7 +158,6 @@ app.get('/proxy/m3u8', async (req, res) => {
   }
 });
 
-// Proxy segment
 app.get('/proxy/segment', async (req, res) => {
   try {
     const { url } = req.query;
@@ -131,10 +172,8 @@ app.get('/proxy/segment', async (req, res) => {
   }
 });
 
-// Root route for health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Anime Scraper (Vercel)' });
+  res.json({ status: 'ok', service: 'Anime Scraper' });
 });
 
-// Export for Vercel
 module.exports = app;
