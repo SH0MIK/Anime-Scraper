@@ -7,23 +7,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Helper to fetch HTML with browser headers
+// Helper to fetch HTML
 async function fetchHTML(url) {
   const response = await axios.get(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     },
     timeout: 15000,
   });
   return response.data;
 }
 
-// 1. Search anime
+// Search
 app.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q) return res.status(400).json({ error: 'Missing ?q' });
+    if (!q) return res.status(400).json({ error: 'Missing q' });
     const url = `https://gogoanime.gg/search.html?keyword=${encodeURIComponent(q)}`;
     const html = await fetchHTML(url);
     const $ = cheerio.load(html);
@@ -41,7 +40,7 @@ app.get('/search', async (req, res) => {
   }
 });
 
-// 2. Get episodes
+// Episodes
 app.get('/episodes', async (req, res) => {
   try {
     const { session } = req.query;
@@ -63,7 +62,7 @@ app.get('/episodes', async (req, res) => {
   }
 });
 
-// 3. Get video source (m3u8)
+// Sources
 app.get('/sources', async (req, res) => {
   try {
     const { ep_session } = req.query;
@@ -98,7 +97,7 @@ app.get('/sources', async (req, res) => {
   }
 });
 
-// 4. Proxy for m3u8
+// Proxy m3u8
 app.get('/proxy/m3u8', async (req, res) => {
   try {
     const { url } = req.query;
@@ -117,7 +116,7 @@ app.get('/proxy/m3u8', async (req, res) => {
   }
 });
 
-// 5. Proxy for segments
+// Proxy segment
 app.get('/proxy/segment', async (req, res) => {
   try {
     const { url } = req.query;
@@ -132,5 +131,10 @@ app.get('/proxy/segment', async (req, res) => {
   }
 });
 
-// Export the Express app for Vercel
+// Root route for health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: 'Anime Scraper (Vercel)' });
+});
+
+// Export for Vercel
 module.exports = app;
