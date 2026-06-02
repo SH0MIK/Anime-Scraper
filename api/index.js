@@ -7,13 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Use a Gogoanime mirror that is not blocked (try multiple)
-const DOMAINS = [
-  'https://gogoanime3.co',
-  'https://gogoanime.gg',
-  'https://gogoanime.pet'
-];
-let currentDomain = DOMAINS[0];
+const BASE_URL = 'https://animekhor.org';
 
 async function fetchHTML(url) {
   const response = await axios.get(url, {
@@ -30,105 +24,104 @@ async function fetchHTML(url) {
 app.get('/search', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: 'Missing q' });
-
-  for (const domain of DOMAINS) {
-    try {
-      const url = `${domain}/search.html?keyword=${encodeURIComponent(q)}`;
-      console.log(`Trying: ${url}`);
-      const html = await fetchHTML(url);
-      const $ = cheerio.load(html);
-      const results = [];
-      $('.last_episodes .items li, .items li').each((i, el) => {
-        const titleElem = $(el).find('.name a, a[href*="/category/"]');
-        let title = titleElem.text().trim();
-        let href = titleElem.attr('href');
-        if (!href) {
-          href = $(el).find('a').attr('href');
-          title = $(el).find('a').text().trim();
-        }
-        const id = href ? href.replace('/category/', '').replace('/', '') : '';
-        const image = $(el).find('img').attr('src');
-        if (title && id) results.push({ id, title, session: id, poster: image });
-      });
-      if (results.length) {
-        currentDomain = domain;
-        return res.json(results.slice(0, 20));
-      }
-    } catch (err) {
-      console.log(`Domain ${domain} search failed:`, err.message);
-    }
+  try {
+    const url = `${BASE_URL}/search?keyword=${encodeURIComponent(q)}`;
+    const html = await fetchHTML(url);
+    const $ = cheerio.load(html);
+    const results = [];
+    $('.anime-grid .anime-item, .film-grid .film-item').each((i, el) => {
+      const title = $(el).find('h3, .film-title').text().trim();
+      const link = $(el).find('a').attr('href');
+      const id = link ? link.split('/')[2] : '';
+      const image = $(el).find('img').attr('src');
+      if (title && id) results.push({ id, title, session: id, poster: image });
+    });
+    res.json(results.slice(0, 20));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json([]);
 });
 
 // Episodes
 app.get('/episodes', async (req, res) => {
   const { session } = req.query;
   if (!session) return res.status(400).json({ error: 'Missing session' });
-
-  for (const domain of DOMAINS) {
-    try {
-      const url = `${domain}/category/${session}`;
-      const html = await fetchHTML(url);
-      const $ = cheerio.load(html);
-      const episodes = [];
-      $('#episode_page a, .episode-list a').each((i, el) => {
-        const epNum = parseInt($(el).text().trim());
-        const epLink = $(el).attr('href');
-        const epId = epLink ? epLink.split('/').pop() : '';
-        if (!isNaN(epNum) && epId) episodes.push({ number: epNum, title: `Episode ${epNum}`, session: epId });
-      });
-      if (episodes.length) {
-        episodes.sort((a,b) => a.number - b.number);
-        return res.json({ episodes });
-      }
-    } catch (err) {}
+  try {
+    const url = `${BASE_URL}/anime/${session}`;
+    const html = await fetchHTML(url);
+    const $ = cheerio.load(html);
+    const episodes = [];
+    $('.episodes-list a, .episode-item a').each((i, el) => {
+      const epNum = parseInt($(el).find('.ep-num, .episode-number').text().trim() || $(el).text().trim());
+      const epLink = $(el).attr('href');
+      const epId = epLink ? epLink.split('/').pop() : '';
+      if (!isNaN(epNum) && epId) episodes.push({ number: epNum, title: `Episode ${epNum}`, session: epId });
+    });
+    episodes.sort((a,b) => a.number - b.number);
+    res.json({ episodes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json({ episodes: [] });
 });
 
 // Sources
 app.get('/sources', async (req, res) => {
   const { ep_session } = req.query;
   if (!ep_session) return res.status(400).json({ error: 'Missing ep_session' });
-
-  for (const domain of DOMAINS) {
-    try {
-      const episodeUrl = `${domain}/${ep_session}`;
-      const html = await fetchHTML(episodeUrl);
-      const $ = cheerio.load(html);
-      let streamUrl = '';
-      $('iframe').each((i, el) => {
-        const src = $(el).attr('src');
-        if (src && src.includes('streaming.php')) streamUrl = src;
-      });
-      if (!streamUrl) streamUrl = $('.play-video iframe').attr('src') || '';
-      if (!streamUrl) continue;
-
-      if (streamUrl.startsWith('//')) streamUrl = 'https:' + streamUrl;
-      const streamHtml = await fetchHTML(streamUrl);
-      const $stream = cheerio.load(streamHtml);
-      let m3u8 = '';
-      $stream('script').each((i, script) => {
-        const content = $(script).html();
-        if (content && content.includes('file:')) {
-          const match = content.match(/file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
-          if (match) m3u8 = match[1];
-        }
-      });
-      if (m3u8) return res.json([{ quality: 'auto', kwik_url: m3u8, audio: 'jpn' }]);
-    } catch (err) {}
+  try {
+    const url = `${BASE_URL}/watch/${ep_session}`;
+    const html = await fetchHTML(url);
+    const $ = cheerio.load(html);
+    let streamUrl = '';
+    // Find the iframe that contains the video
+    $('iframe').each((i, el) => {
+      const src = $(el).attr('src');
+      if (src && (src.includes('vidsrc') || src.includes('embed') || src.includes('drive'))) {
+        streamUrl = src;
+        return false;
+      }
+    });
+    if (!streamUrl) {
+      const videoSrc = $('video source').attr('src');
+      if (videoSrc) {
+        return res.json([{ quality: 'auto', kwik_url: videoSrc, audio: 'jpn' }]);
+      }
+      return res.status(404).json({ error: 'No video source found' });
+    }
+    if (streamUrl.startsWith('//')) streamUrl = 'https:' + streamUrl;
+    // The iframe may contain an m3u8 directly
+    if (streamUrl.includes('.m3u8')) {
+      return res.json([{ quality: 'auto', kwik_url: streamUrl, audio: 'jpn' }]);
+    }
+    // Fetch the iframe content to extract m3u8
+    const frameHtml = await fetchHTML(streamUrl);
+    const $frame = cheerio.load(frameHtml);
+    let m3u8 = '';
+    $frame('script').each((i, script) => {
+      const content = $(script).html();
+      if (content) {
+        const match = content.match(/file:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/);
+        if (match) m3u8 = match[1];
+      }
+    });
+    if (!m3u8) {
+      const directVideo = $frame('video source').attr('src');
+      if (directVideo) m3u8 = directVideo;
+    }
+    if (!m3u8) return res.status(404).json({ error: 'No m3u8 found' });
+    res.json([{ quality: 'auto', kwik_url: m3u8, audio: 'jpn' }]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.status(404).json({ error: 'No sources found' });
 });
 
-// Proxy endpoints
+// Proxy endpoints (same as before)
 app.get('/proxy/m3u8', async (req, res) => {
   try {
     const { url } = req.query;
     if (!url) return res.status(400).send('Missing url');
     const decoded = decodeURIComponent(url);
-    const response = await axios.get(decoded, { responseType: 'text', headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 15000 });
+    const response = await axios.get(decoded, { responseType: 'text', timeout: 15000 });
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(response.data);
@@ -152,7 +145,7 @@ app.get('/proxy/segment', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Anime Scraper' });
+  res.json({ status: 'ok', service: 'Anime Scraper (AnimeKhor)' });
 });
 
 module.exports = app;
